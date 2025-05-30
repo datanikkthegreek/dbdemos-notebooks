@@ -149,12 +149,11 @@ def ingest_folder(folder, data_format, table):
                               .option("cloudFiles.inferColumnTypes", "true")
                               .option("cloudFiles.schemaLocation", f"{volume_folder}/schema/{table}") #Autoloader will automatically infer all the schema & evolution
                               .load(folder))
-
   return (bronze_products.writeStream
                     .option("checkpointLocation", f"{volume_folder}/checkpoint/{table}") #exactly once delivery on Delta tables over restart/kill
                     .option("mergeSchema", "true") #merge any new column dynamically
                     .trigger(availableNow= True) #Remove for real time streaming
-                    .table("spark_"+table)) #Table will be created if we haven't specified the schema first
+                    .table(table)) #Table will be created if we haven't specified the schema first
   
 ingest_folder(f'{volume_folder}/historical_turbine_status', 'json', 'spark_historical_turbine_status')
 ingest_folder(f'{volume_folder}/turbine', 'json', 'spark_turbine')

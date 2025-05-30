@@ -87,7 +87,7 @@
 # COMMAND ----------
 
 # DBTITLE 1,Install required external libraries
-# MAGIC %pip install mlflow==2.22.0 databricks-vectorsearch==0.49 databricks-feature-engineering==0.8.0 databricks-sdk==0.40.0
+# MAGIC %pip install mlflow==2.22.0 databricks-vectorsearch==0.56 databricks-feature-engineering==0.10.2 databricks-sdk==0.55.0
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -270,7 +270,7 @@ else:
 
 # MAGIC %md-sandbox
 # MAGIC ### Define Maintenance Report Retriever function
-# MAGIC Below, we utilize the _VECTOR\_SEARCH_ SQL function from Databricks to easily set up our maintenance reports retriever function. Our agent will utilize this function in the subsequent steps!
+# MAGIC Below, we utilize the _VECTOR\_SEARCH_ SQL function from Databricks to easily set up our maintenance reports retriever function. In our Agent we will not leverage the function instead we can directly integrate the vector index into the agent as the SQL function for authentification is not currently supported within the agent.
 
 # COMMAND ----------
 
@@ -302,195 +302,37 @@ RETURN (
 # MAGIC
 # MAGIC <img src="https://raw.githubusercontent.com/databricks-demos/dbdemos-resources/refs/heads/main/images/manufacturing/lakehouse-iot-turbine/agent_graph_3.png" style="float: right; width: 600px; margin-left: 10px">
 # MAGIC
-# MAGIC To enable our Agent System to retrieve turbine specifications for turbines predicted to be faulty, we need to serve the DLT `turbine_current_features` feature table through a feature serving endpoint.
-# MAGIC
-# MAGIC Databricks Feature Serving offers a unified interface for serving pre-materialized and on-demand features to models or applications deployed outside Databricks. These endpoints automatically scale to handle real-time traffic, ensuring high availability and low latency.
-# MAGIC
-# MAGIC This part illustrates how to:
-# MAGIC 1. Create a `FeatureSpec`. A `FeatureSpec` defines a set of features (prematerialized and on-demand) that are served together. 
-# MAGIC 2. Create an `Online Table` from a Delta Table.
-# MAGIC 3. Serve the features. To serve features, you create a Feature Serving endpoint with the `FeatureSpec`.
-# MAGIC 4. Create a `Feature Serving as tool` using UC tool functions.
-# MAGIC 5. Query a `Feature Serving as tool` using SQL.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC   
-# MAGIC ###  This demo requires a secret to work:
-# MAGIC Your Tool will need a secret to authenticate against the online table we create (see [Documentation](https://docs.databricks.com/en/security/secrets/secrets.html)).  <br/>
-# MAGIC **Note: if you are using a shared demo workspace and you see that the secret is setup, please don't run these steps and do not override its value**<br/>
-# MAGIC
-# MAGIC - You'll need to [setup the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html) on your laptop or using this cluster terminal: <br/>
-# MAGIC `pip install databricks-cli` <br/>
-# MAGIC - Configure the CLI. You'll need your workspace URL and a PAT token from your profile page<br>
-# MAGIC `databricks configure`
-# MAGIC - Create the dbdemos scope:<br/>
-# MAGIC `databricks secrets create-scope --scope dbdemos`
-# MAGIC - Save your service principal secret. It will be used by the Model Endpoint to autenticate. If this is a demo/test, you can use one of your [PAT token](https://docs.databricks.com/en/dev-tools/auth/pat.html).<br>
-# MAGIC `databricks secrets put-secret <SCOPE_GOES_HERE> <KEY_GOES_HERE> --string-value 
-# MAGIC <SECRET_GOES_HERE>'`
-# MAGIC
-# MAGIC *Note: Make sure your service principal has access to the Vector Search index:*
-# MAGIC
-# MAGIC ```
-# MAGIC spark.sql('GRANT USAGE ON CATALOG <catalog> TO `<YOUR_SP>`');
-# MAGIC spark.sql('GRANT USAGE ON DATABASE <catalog>.<db> TO `<YOUR_SP>`');
-# MAGIC from databricks.sdk import WorkspaceClient
-# MAGIC import databricks.sdk.service.catalog as c
-# MAGIC WorkspaceClient().grants.update(c.SecurableType.TABLE, <index_name>, 
-# MAGIC                                 changes=[c.PermissionsChange(add=[c.Privilege["SELECT"]], principal="<YOUR_SP>")])
-# MAGIC WorkspaceClient().secrets.put_acl(scope=dbdemos, principal="<YOUR_SP>", permission=workspace.AclPermission.READ)
-# MAGIC   ```
-
-# COMMAND ----------
-
-# MAGIC %md ### Set up a Feature Table
-# MAGIC
-# MAGIC We'll use the table `turbine_current_features` we created in our DLT pipeline as our feature store.
-
-# COMMAND ----------
-
-# MAGIC %md-sandbox
-# MAGIC ### What's required for our Feature Serving endpoint
-# MAGIC
-# MAGIC To deploy a Feature Serving endpoint, you need to create a **FeatureSpec**.
-# MAGIC
-# MAGIC FeatureSpecs are stored in and mananged by Unity Catalog and appear in the Catalog Explorer.
-# MAGIC
-# MAGIC Tables specified in a FeatureSpec must be published to an **online store or an online table** for Online Serving.
-# MAGIC
-# MAGIC This demo shows how to setup a **Feature Spec** with a **Feature Function**.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Setting up a Databricks Online Table
-# MAGIC To access the feature table from Feature Serving, you must create an Online Table from the feature table. You can create an online table from the Catalog Explorer UI, Databricks SDK or Rest API. The steps to use Databricks python SDK are described below. For more details, see the Databricks documentation ([AWS](https://docs.databricks.com/en/machine-learning/feature-store/online-tables.html#create)|[Azure](https://learn.microsoft.com/azure/databricks/machine-learning/feature-store/online-tables#create)). For information about required permissions, see Permissions ([AWS](https://docs.databricks.com/en/machine-learning/feature-store/online-tables.html#user-permissions)|[Azure](https://learn.microsoft.com/azure/databricks/machine-learning/feature-store/online-tables#user-permissions)).
-
-# COMMAND ----------
-
-# DBTITLE 1,Databricks Online Table Setup
-from pprint import pprint
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.catalog import *
-import mlflow
-
-w = WorkspaceClient()
-online_table_name = f"{catalog}.{db}.turbine_current_features_online"
-
-spec = OnlineTableSpec(
-    primary_key_columns=["turbine_id"],
-    source_table_full_name=f"{catalog}.{db}.turbine_current_features",
-    run_triggered=OnlineTableSpecTriggeredSchedulingPolicy.from_dict({'triggered': 'true'}),
-    perform_full_copy=True
-)
-
-try:
-    online_table_pipeline = w.online_tables.create(table=OnlineTable(name=online_table_name, spec=spec))
-except Exception as e:
-    if "already exists" in str(e):
-        pass
-    else:
-        raise e
-
-pprint(w.online_tables.get(online_table_name))
-
-# COMMAND ----------
-
-# DBTITLE 1,Catalog Turbine Specifications
-from databricks.feature_engineering import FeatureLookup
-from databricks.feature_engineering import FeatureEngineeringClient
-
-fe = FeatureEngineeringClient()
-
-features = [FeatureLookup(
-    table_name=f"{catalog}.{db}.turbine_current_features",
-    lookup_key=["turbine_id"]
-  )]
-
-# Create a `FeatureSpec` in Unity Catalog
-try:
-  fe.create_feature_spec(name=f"{catalog}.{db}.turbine_features_spec", features=features)
-except Exception as e:
-  if "already exists" in str(e):
-    print(f"FeatureSpec {catalog}.{db}.turbine_features_spec already exists. Skipping execution")
-  else:
-    print(f"An error occurred: {e}")
-    raise e
-
-# COMMAND ----------
-
-# MAGIC %md ### Create a Feature Serving endpoint
-# MAGIC
-# MAGIC Let's create Feature Serving endpoint using the Databricks Python SDK: 
-
-# COMMAND ----------
-
-from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
-
-try:
- status = w.serving_endpoints.create_and_wait(
-   name=FEATURE_SERVING_ENDPOINT_NAME,
-   config = EndpointCoreConfigInput(
-     served_entities=[
-       ServedEntityInput(
-         entity_name=f"{catalog}.{db}.turbine_features_spec",
-         scale_to_zero_enabled=True,
-         workload_size="Small"
-       )
-     ]
-   ) 
- )
-
-except Exception as e:
-  if "already exists" in str(e):
-    print(f"Serving endpoint {FEATURE_SERVING_ENDPOINT_NAME} already exists. Skipping execution")
-  else:
-    raise e
-
-# COMMAND ----------
-
-# MAGIC %md You can now view the status of the Feature Serving Endpoint in the table on the **Serving endpoints** page. Click **Serving** in the sidebar to display the page.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Using the Turbine Specifications Retriever as tool to retrieve turbine specifications
-# MAGIC Next, we define the turbine specifications retriever tool function our LLM agent will be able to execute. To do so, we will wrap the Feature Serving endpoint in a UC tool function.
-
-# COMMAND ----------
-
-host = WorkspaceClient().config.host
-
-spark.sql(f"""DROP FUNCTION IF EXISTS {catalog}.{db}.turbine_specifications_retriever_with_secret;""")
-spark.sql(f"""
-CREATE OR REPLACE FUNCTION {catalog}.{db}.turbine_specifications_retriever_with_secret(
-  turbine_id STRING, databricks_token STRING)
-RETURNS STRUCT<turbine_id STRING, hourly_timestamp STRING, avg_energy DOUBLE, std_sensor_A DOUBLE, std_sensor_B DOUBLE, std_sensor_C DOUBLE, std_sensor_D DOUBLE, std_sensor_E DOUBLE, std_sensor_F DOUBLE, country STRING, lat STRING, location STRING, long STRING, model STRING, state STRING>
-LANGUAGE PYTHON
-AS
-$$
-  try:
-    import requests
-    headers = {{"Authorization": "Bearer " + databricks_token}}
-    #Call our vector search endpoint via simple SQL statement
-    response = requests.post("{host}/serving-endpoints/dbdemos_iot_turbine_feature_endpoint/invocations", json = {{"dataframe_records": [{{"turbine_id": turbine_id}}]}}, headers=headers)
-    return response.json().get('outputs')[0]
-  except Exception as e:
-    raise e
-$$;""")
+# MAGIC To enable our Agent System to retrieve turbine specifications for turbines predicted to be faulty, we need to serve the DLT `turbine_current_features` feature table through a function. In future this function will call our Lakebase allowing real-time traffic.
 
 # COMMAND ----------
 
 # DBTITLE 1,Add the wrapper
 # MAGIC %sql
 # MAGIC DROP FUNCTION IF EXISTS turbine_specifications_retriever;
-# MAGIC CREATE OR REPLACE FUNCTION turbine_specifications_retriever (turbine_id STRING)
-# MAGIC   RETURNS STRUCT<turbine_id STRING, hourly_timestamp STRING, avg_energy DOUBLE, std_sensor_A DOUBLE, std_sensor_B DOUBLE, std_sensor_C DOUBLE, std_sensor_D DOUBLE, std_sensor_E DOUBLE, std_sensor_F DOUBLE, country STRING, lat STRING, location STRING, long STRING, model STRING, state STRING>
+# MAGIC CREATE OR REPLACE FUNCTION turbine_specifications_retriever (
+# MAGIC   turbineid STRING
+# MAGIC   COMMENT 'Turbine ID to be searched'
+# MAGIC )
+# MAGIC RETURNS TABLE(
+# MAGIC   turbine_id STRING, 
+# MAGIC   hourly_timestamp STRING, 
+# MAGIC   avg_energy DOUBLE, 
+# MAGIC   std_sensor_A DOUBLE, 
+# MAGIC   std_sensor_B DOUBLE, 
+# MAGIC   std_sensor_C DOUBLE, 
+# MAGIC   std_sensor_D DOUBLE, 
+# MAGIC   std_sensor_E DOUBLE, 
+# MAGIC   std_sensor_F DOUBLE, 
+# MAGIC   country STRING, 
+# MAGIC   lat STRING, 
+# MAGIC   location STRING, 
+# MAGIC   long STRING, 
+# MAGIC   model STRING, 
+# MAGIC   state STRING
+# MAGIC )
 # MAGIC LANGUAGE SQL
 # MAGIC COMMENT 'This tool returns turbine specifications based on the turbine_id.'
-# MAGIC   RETURN SELECT turbine_specifications_retriever_with_secret(turbine_id, secret('dbdemos', 'ai_agent_sp_token'));
+# MAGIC RETURN SELECT * FROM turbine_current_features WHERE turbine_id = turbineid LIMIT 1;
 
 # COMMAND ----------
 
@@ -500,7 +342,7 @@ $$;""")
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC SELECT turbine_specifications_retriever('25b2116a-ae6c-ff55-ce0c-3f08e12656f1') AS turbine_specifications
+# MAGIC SELECT * FROM turbine_specifications_retriever('25b2116a-ae6c-ff55-ce0c-3f08e12656f1') AS turbine_specifications
 
 # COMMAND ----------
 
