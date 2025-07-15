@@ -189,12 +189,6 @@ AS SELECT * FROM cloud_files("/Volumes/main_build/dbdemos_iot_platform/turbine_r
 
 -- COMMAND ----------
 
-CREATE STREAMING TABLE parts 
-COMMENT "Turbine parts from our manufacturing system"
-AS SELECT * FROM cloud_files("/Volumes/main_build/dbdemos_iot_platform/turbine_raw_landing/parts", "json", map("cloudFiles.inferColumnTypes" , "true"))
-
--- COMMAND ----------
-
 -- MAGIC %md-sandbox
 -- MAGIC
 -- MAGIC ## 2/ Compute aggregations: merge sensor data at an hourly level
