@@ -148,32 +148,6 @@
 
 # COMMAND ----------
 
-dbdemos_iot_turbine_prediction_endpoint
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- CREATE MATERIALIZED VIEW tttt TBLPROPERTIES('pipelines.channel' = 'PREVIEW') AS 
-# MAGIC SELECT *, ai_query(
-# MAGIC         'dbdemos_iot_turbine_prediction_endpoint', 
-# MAGIC         named_struct(
-# MAGIC             'hourly_timestamp', hourly_timestamp,
-# MAGIC             'avg_energy', avg_energy,
-# MAGIC             'std_sensor_A', std_sensor_A,
-# MAGIC             'std_sensor_B', std_sensor_B,
-# MAGIC             'std_sensor_C', std_sensor_C,
-# MAGIC             'std_sensor_D', std_sensor_D,
-# MAGIC             'std_sensor_E', std_sensor_E,
-# MAGIC             'std_sensor_F', std_sensor_F,
-# MAGIC             'location', location,
-# MAGIC             'model', model,
-# MAGIC             'state', state        ),
-# MAGIC         'STRING'
-# MAGIC     ) as prediction
-# MAGIC FROM nikkthegreek_demo.iotdemo.turbine_current_features
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC Now we can test out our function below:
 
@@ -193,22 +167,6 @@ dbdemos_iot_turbine_prediction_endpoint
 # MAGIC     'EpicWind',                                   -- model
 # MAGIC     'America/New_York'                           -- state
 # MAGIC ) AS prediction
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC CREATE OR REPLACE FUNCTION nikkthegreeks_demo.iotdemo.masking(col STRING)
-# MAGIC RETURN '*****';
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC DROP FUNCTION nikkthegreeks_demo.iotdemo.masking2
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT nikkthegreek_demo.iotdemo.mask('abc')
 
 # COMMAND ----------
 
@@ -312,7 +270,9 @@ else:
 
 # MAGIC %md-sandbox
 # MAGIC ### Define Maintenance Report Retriever function
-# MAGIC Below, we utilize the _VECTOR\_SEARCH_ SQL function from Databricks to easily set up our maintenance reports retriever function. In our Agent we will not leverage the function instead we can directly integrate the vector index into the agent as the SQL function for authentification is not currently supported within the agent.
+# MAGIC Below, we utilize the _VECTOR\_SEARCH_ SQL function from Databricks to easily set up our maintenance reports retriever function. 
+# MAGIC
+# MAGIC **In our Agent we will not leverage the function instead we can directly integrate the vector index into the agent as the SQL function for authentification is not currently supported within the agent.**
 
 # COMMAND ----------
 
