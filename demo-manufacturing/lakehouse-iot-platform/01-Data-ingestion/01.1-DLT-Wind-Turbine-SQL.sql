@@ -166,7 +166,13 @@ CREATE STREAMING TABLE turbine (
   CONSTRAINT correct_schema EXPECT (_rescued_data IS NULL)
 )
 COMMENT "Turbine details, with location, wind turbine model type etc"
-AS SELECT * FROM cloud_files("/Volumes/main_build/dbdemos_iot_platform/turbine_raw_landing/turbine", "json", map("cloudFiles.inferColumnTypes" , "true"))
+AS SELECT
+  *
+FROM STREAM READ_FILES(
+    "/Volumes/nikkthegreek_demo/iotdemo/turbine_raw_landing/turbine",
+    format => "json",
+    inferColumnTypes => true
+)
 
 -- COMMAND ----------
 
@@ -176,7 +182,13 @@ CREATE STREAMING TABLE sensor_bronze (
   CONSTRAINT correct_energy EXPECT (energy IS NOT NULL and energy > 0) ON VIOLATION DROP ROW
 )
 COMMENT "Raw sensor data coming from json files ingested in incremental with Auto Loader: vibration, energy produced etc. 1 point every X sec per sensor."
-AS SELECT * FROM cloud_files("/Volumes/main_build/dbdemos_iot_platform/turbine_raw_landing/incoming_data", "parquet", map("cloudFiles.inferColumnTypes" , "true"))
+AS SELECT
+  * 
+FROM STREAM READ_FILES(
+    "/Volumes/nikkthegreek_demo/iotdemo/turbine_raw_landing/incoming_data",
+    format => "parquet",
+    inferColumnTypes => true
+)
 
 -- COMMAND ----------
 
@@ -185,7 +197,13 @@ CREATE STREAMING TABLE historical_turbine_status (
   CONSTRAINT correct_schema EXPECT (_rescued_data IS NULL)
 )
 COMMENT "Turbine status to be used as label in our predictive maintenance model (to know which turbine is potentially faulty)"
-AS SELECT * FROM cloud_files("/Volumes/main_build/dbdemos_iot_platform/turbine_raw_landing/historical_turbine_status", "json", map("cloudFiles.inferColumnTypes" , "true"))
+AS SELECT
+  *
+FROM STREAM READ_FILES(
+    "/Volumes/nikkthegreek_demo/iotdemo/turbine_raw_landing/historical_turbine_status",
+    format => "json",
+    inferColumnTypes => true
+)
 
 -- COMMAND ----------
 
@@ -222,7 +240,7 @@ SELECT turbine_id,
       percentile_approx(sensor_D, array(0.1, 0.3, 0.6, 0.8, 0.95)) as percentiles_sensor_D,
       percentile_approx(sensor_E, array(0.1, 0.3, 0.6, 0.8, 0.95)) as percentiles_sensor_E,
       percentile_approx(sensor_F, array(0.1, 0.3, 0.6, 0.8, 0.95)) as percentiles_sensor_F
-  FROM LIVE.sensor_bronze GROUP BY hourly_timestamp, turbine_id
+  FROM sensor_bronze GROUP BY hourly_timestamp, turbine_id
 
 -- COMMAND ----------
 
@@ -241,9 +259,9 @@ SELECT turbine_id,
 CREATE MATERIALIZED VIEW turbine_training_dataset 
 COMMENT "Hourly sensor stats, used to describe signal and detect anomalies"
 AS
-SELECT CONCAT(t.turbine_id, '-', s.start_time) AS composite_key, array(std_sensor_A, std_sensor_B, std_sensor_C, std_sensor_D, std_sensor_E, std_sensor_F) AS sensor_vector, * except(t._rescued_data, s._rescued_data, m.turbine_id) FROM LIVE.sensor_hourly m
-    INNER JOIN LIVE.turbine t USING (turbine_id)
-    INNER JOIN LIVE.historical_turbine_status s ON m.turbine_id = s.turbine_id AND from_unixtime(s.start_time) < m.hourly_timestamp AND from_unixtime(s.end_time) > m.hourly_timestamp
+SELECT CONCAT(t.turbine_id, '-', s.start_time) AS composite_key, array(std_sensor_A, std_sensor_B, std_sensor_C, std_sensor_D, std_sensor_E, std_sensor_F) AS sensor_vector, * except(t._rescued_data, s._rescued_data, m.turbine_id) FROM sensor_hourly m
+    INNER JOIN turbine t USING (turbine_id)
+    INNER JOIN historical_turbine_status s ON m.turbine_id = s.turbine_id AND from_unixtime(s.start_time) < m.hourly_timestamp AND from_unixtime(s.end_time) > m.hourly_timestamp
 
 -- COMMAND ----------
 
@@ -286,22 +304,46 @@ CREATE MATERIALIZED VIEW turbine_current_features
 COMMENT "Wind turbine features based on model prediction"
 AS
 WITH latest_metrics AS (
-  SELECT *, ROW_NUMBER() OVER(PARTITION BY turbine_id, hourly_timestamp ORDER BY hourly_timestamp DESC) AS row_number FROM LIVE.sensor_hourly
+  SELECT *, ROW_NUMBER() OVER(PARTITION BY turbine_id, hourly_timestamp ORDER BY hourly_timestamp DESC) AS row_number FROM sensor_hourly
 )
 SELECT * EXCEPT(m.row_number,_rescued_data, percentiles_sensor_A,percentiles_sensor_B, percentiles_sensor_C, percentiles_sensor_D, percentiles_sensor_E, percentiles_sensor_F) 
 FROM latest_metrics m
-   INNER JOIN LIVE.turbine t USING (turbine_id)
+   INNER JOIN turbine t USING (turbine_id)
    WHERE m.row_number=1 and turbine_id is not null
 
 -- COMMAND ----------
 
--- Note: The AI model predict_maintenance is loaded from the 01.2-DLT-Wind-Turbine-SQL-UDF notebook
+-- Note: Alternative where the AI model predict_maintenance is loaded from the 01.2-DLT-Wind-Turbine-SQL-UDF notebook
+
+-- CREATE MATERIALIZED VIEW turbine_current_status 
+-- COMMENT "Wind turbine last status based on model prediction"
+-- AS
+-- SELECT *, 
+--     predict_maintenance(hourly_timestamp, avg_energy, std_sensor_A, std_sensor_B, std_sensor_C, std_sensor_D, std_sensor_E, std_sensor_F, location, model, state) as prediction 
+-- FROM turbine_current_features
+
+-- COMMAND ----------
+
 CREATE MATERIALIZED VIEW turbine_current_status 
 COMMENT "Wind turbine last status based on model prediction"
 AS
-SELECT *, 
-    predict_maintenance(hourly_timestamp, avg_energy, std_sensor_A, std_sensor_B, std_sensor_C, std_sensor_D, std_sensor_E, std_sensor_F, location, model, state) as prediction 
-  FROM LIVE.turbine_current_features
+SELECT *, ai_query(
+        'dbdemos_iot_turbine_prediction_endpoint', 
+        named_struct(
+            'hourly_timestamp', hourly_timestamp,
+            'avg_energy', avg_energy,
+            'std_sensor_A', std_sensor_A,
+            'std_sensor_B', std_sensor_B,
+            'std_sensor_C', std_sensor_C,
+            'std_sensor_D', std_sensor_D,
+            'std_sensor_E', std_sensor_E,
+            'std_sensor_F', std_sensor_F,
+            'location', location,
+            'model', model,
+            'state', state        ),
+        'STRING'
+    ) as prediction
+FROM turbine_current_features
 
 -- COMMAND ----------
 
